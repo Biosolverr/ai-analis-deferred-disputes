@@ -129,11 +129,19 @@ ARBITRATION RULES:
 
 Decide the outcome based on how well each party's argument aligns with the objective facts and addresses the subjective clause.
 
-Return JSON format:
-{{
-  "decision": "party_a" | "party_b" | "split",
-  "reasoning": "detailed explanation of your decision based on facts and evidence"
-}}"""
+Return JSON:
+{
+  "winner": "player_a" | "player_b" | "draw",
+  "reason": "step-by-step reasoning",
+  "analysis": {
+    "argument_a_strengths": "...",
+    "argument_a_weaknesses": "...",
+    "argument_b_strengths": "...",
+    "argument_b_weaknesses": "...",
+    "key_facts_used": "...",
+    "why_winner": "..."
+  }
+}
 
         def leader():
             return gl.nondet.exec_prompt(prompt, response_format="json")
