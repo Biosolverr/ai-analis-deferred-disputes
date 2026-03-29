@@ -495,3 +495,338 @@ FINAL VERDICT BASIS:
                 "counter_argument": self.appeal_counter_argument
             }
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# v0.5.3 - Matching v0.3.1 response pattern
+# { "Depends": "py-genlayer:latest" }
+
+from genlayer import *
+
+
+class DeferredSwapContract(gl.Contract):
+    party_a: str
+    party_b: str
+    amount: u64
+    deadline: str
+    objective_facts: str
+    subjective_clause: str
+
+    argument_a: str
+    argument_b: str
+    has_submitted_a: bool
+    has_submitted_b: bool
+
+    status: str
+    verdict: str
+    verdict_reason: str
+
+    appeal_round: u64
+    appeal_argument: str
+    appeal_counter_argument: str
+    appeal_active: bool
+
+    def __init__(
+        self,
+        party_a: str,
+        party_b: str,
+        amount: u64,
+        deadline: str,
+        objective_facts: str,
+        subjective_clause: str,
+    ):
+        self.party_a = party_a
+        self.party_b = party_b
+        self.amount = amount
+        self.deadline = deadline
+        self.objective_facts = objective_facts
+        self.subjective_clause = subjective_clause
+
+        self.argument_a = ""
+        self.argument_b = ""
+        self.has_submitted_a = False
+        self.has_submitted_b = False
+
+        self.status = "active"
+        self.verdict = ""
+        self.verdict_reason = ""
+
+        self.appeal_round = u64(0)
+        self.appeal_argument = ""
+        self.appeal_counter_argument = ""
+        self.appeal_active = False
+
+    # ───────────── submit arguments ─────────────
+
+    @gl.public.write
+    def submit_argument_as_a(self, argument: str) -> None:
+        if self.status not in ("active", "appeal_round"):
+            raise gl.UserError("Cannot submit arguments in current status")
+        if len(argument.strip()) < 50:
+            raise gl.UserError("Argument must be at least 50 characters long")
+        if self.has_submitted_a and self.status == "active":
+            raise gl.UserError("Party A already submitted initial argument")
+
+        self.argument_a = argument
+        self.has_submitted_a = True
+
+        if self.has_submitted_a and self.has_submitted_b:
+            self.status = "dispute_submitted"
+
+    @gl.public.write
+    def submit_argument_as_b(self, argument: str) -> None:
+        if self.status not in ("active", "appeal_round"):
+            raise gl.UserError("Cannot submit arguments in current status")
+        if len(argument.strip()) < 50:
+            raise gl.UserError("Argument must be at least 50 characters long")
+        if self.has_submitted_b and self.status == "active":
+            raise gl.UserError("Party B already submitted initial argument")
+
+        self.argument_b = argument
+        self.has_submitted_b = True
+
+        if self.has_submitted_a and self.has_submitted_b:
+            self.status = "dispute_submitted"
+
+    # ───────────── resolve ─────────────
+
+    @gl.public.write
+    def resolve_dispute(self) -> None:
+        if self.status != "dispute_submitted":
+            raise gl.UserError("Dispute not ready for resolution")
+
+        prompt = f"""You are an impartial smart contract arbitrator.
+
+OBJECTIVE FACTS (cannot be disputed):
+{self.objective_facts}
+
+SUBJECTIVE CLAUSE:
+{self.subjective_clause}
+
+CONTRACT: {self.party_a} vs {self.party_b}, {self.amount} USDC, deadline {self.deadline}.
+
+Party A argument:
+{self.argument_a}
+
+Party B argument:
+{self.argument_b}
+
+STRICT RULES:
+1. Facts above are TRUE and must not be ignored
+2. Facts override any claims in arguments — if argument contradicts facts, ignore that part
+3. If a claim cannot be verified from provided facts or arguments, treat it as weak evidence
+4. Ignore emotional language completely
+5. Do NOT invent facts
+6. Base reasoning ONLY on objective facts, arguments, and clause interpretation
+7. If both sides have equally strong evidence, return "split"
+8. Prefer arguments that directly refute opponent
+9. In your reason, analyze strengths and weaknesses of BOTH sides, state which facts were decisive, and explain step by step why you chose the winner
+
+Return JSON:
+{{
+  "verdict": "party_a" | "party_b" | "split",
+  "reason": "detailed explanation referencing facts"
+}}"""
+
+        def leader():
+            return gl.nondet.exec_prompt(prompt, response_format="json")
+
+        def validator(res) -> bool:
+            if not isinstance(res, gl.vm.Return):
+                return False
+            data = res.calldata
+            if not isinstance(data, dict):
+                return False
+            v = data.get("verdict")
+            r = data.get("reason", "")
+            return v in ("party_a", "party_b", "split") and len(r) > 10
+
+        result = gl.vm.run_nondet_unsafe(leader, validator)
+
+        self.verdict = result.get("verdict", "split")
+        self.verdict_reason = result.get("reason", "No reasoning provided")
+        self.status = "resolved"
+
+    # ───────────── appeal ─────────────
+
+    @gl.public.write
+    def appeal(self, appeal_argument: str) -> None:
+        if self.status != "resolved":
+            raise gl.UserError("Can only appeal resolved disputes")
+        if self.appeal_round >= u64(3):
+            raise gl.UserError("Maximum 3 appeal rounds reached")
+        if len(appeal_argument.strip()) < 100:
+            raise gl.UserError("Appeal argument must be at least 100 characters")
+
+        self.appeal_round += u64(1)
+        self.appeal_argument = appeal_argument
+        self.appeal_counter_argument = ""
+        self.appeal_active = True
+        self.status = "appeal_round"
+        self.has_submitted_a = False
+        self.has_submitted_b = False
+
+    @gl.public.write
+    def respond_to_appeal(self, counter_argument: str) -> None:
+        if not self.appeal_active:
+            raise gl.UserError("No active appeal to respond to")
+        if len(counter_argument.strip()) < 50:
+            raise gl.UserError("Counter-argument must be at least 50 characters")
+        self.appeal_counter_argument = counter_argument
+
+    @gl.public.write
+    def resolve_appeal(self) -> None:
+        if not self.appeal_active:
+            raise gl.UserError("No active appeal")
+
+        prompt = f"""You are reviewing appeal round {self.appeal_round} for a smart contract dispute.
+
+OBJECTIVE FACTS (cannot be disputed):
+{self.objective_facts}
+
+SUBJECTIVE CLAUSE:
+{self.subjective_clause}
+
+CONTRACT: {self.party_a} vs {self.party_b}, {self.amount} USDC, deadline {self.deadline}.
+
+ORIGINAL ARGUMENTS:
+Party A: {self.argument_a}
+Party B: {self.argument_b}
+
+PREVIOUS VERDICT: {self.verdict}
+PREVIOUS REASONING: {self.verdict_reason}
+
+APPEAL ROUND: {self.appeal_round}
+
+APPEAL ARGUMENT:
+{self.appeal_argument}
+
+COUNTER TO APPEAL:
+{self.appeal_counter_argument}
+
+STRICT RULES:
+1. Facts above are TRUE and must not be ignored
+2. Facts override any claims — if argument contradicts facts, ignore that part
+3. Ignore emotional language completely
+4. Do NOT invent facts
+5. Re-evaluate the case INCLUDING new arguments
+6. You may change your verdict if new facts justify it
+7. Appeals should only succeed if they provide compelling new evidence or expose clear errors
+8. Burden of proof is on the appealing party
+9. In your reason, explain whether the original decision was correct, what new evidence was presented, and why you are maintaining or changing the verdict
+
+Return JSON:
+{{
+  "verdict": "party_a" | "party_b" | "split",
+  "reason": "detailed explanation referencing facts and comparing with previous decision"
+}}"""
+
+        def leader():
+            return gl.nondet.exec_prompt(prompt, response_format="json")
+
+        def validator(res) -> bool:
+            if not isinstance(res, gl.vm.Return):
+                return False
+            data = res.calldata
+            if not isinstance(data, dict):
+                return False
+            v = data.get("verdict")
+            r = data.get("reason", "")
+            return v in ("party_a", "party_b", "split") and len(r) > 10
+
+        result = gl.vm.run_nondet_unsafe(leader, validator)
+
+        self.verdict = result.get("verdict", self.verdict)
+        self.verdict_reason = result.get("reason", "No reasoning provided")
+
+        self.appeal_active = False
+        self.appeal_argument = ""
+        self.appeal_counter_argument = ""
+        self.status = "resolved"
+
+    # ───────────── views ─────────────
+
+    @gl.public.view
+    def get_status(self) -> str:
+        return self.status
+
+    @gl.public.view
+    def get_verdict(self) -> str:
+        if self.verdict:
+            return f"{self.verdict}: {self.verdict_reason}"
+        return "No verdict yet"
+
+    @gl.public.view
+    def get_reasoning(self) -> str:
+        return self.verdict_reason
+
+    @gl.public.view
+    def get_arguments(self) -> dict:
+        return {
+            "party_a_argument": self.argument_a,
+            "party_b_argument": self.argument_b,
+            "has_submitted_a": self.has_submitted_a,
+            "has_submitted_b": self.has_submitted_b,
+        }
+
+    @gl.public.view
+    def get_appeal_round(self) -> u64:
+        return self.appeal_round
+
+    @gl.public.view
+    def get_appeal_arguments(self) -> dict:
+        return {
+            "appeal_round": self.appeal_round,
+            "appeal_argument": self.appeal_argument,
+            "counter_argument": self.appeal_counter_argument,
+            "appeal_active": self.appeal_active,
+        }
+
+    @gl.public.view
+    def get_full_state(self) -> dict:
+        return {
+            "contract_details": {
+                "party_a": self.party_a,
+                "party_b": self.party_b,
+                "amount": self.amount,
+                "deadline": self.deadline,
+            },
+            "facts_and_clause": {
+                "objective_facts": self.objective_facts,
+                "subjective_clause": self.subjective_clause,
+            },
+            "arguments": {
+                "party_a": self.argument_a,
+                "party_b": self.argument_b,
+            },
+            "resolution": {
+                "status": self.status,
+                "verdict": self.verdict,
+                "reasoning": self.verdict_reason,
+            },
+            "appeal_info": {
+                "appeal_round": self.appeal_round,
+                "appeal_active": self.appeal_active,
+                "appeal_argument": self.appeal_argument,
+                "counter_argument": self.appeal_counter_argument,
+            },
+        }
+
+
+
+
+
+
